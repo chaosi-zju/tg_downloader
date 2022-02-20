@@ -10,7 +10,7 @@ from telethon.tl.types import InputMessagesFilterVoice
 
 session_name = 'hello'
 api_id = 14150995
-api_hash = ''
+api_hash = os.environ.get('tg_api_hash')
 max_worker_num = 8
 dir_prefix = './downloads/'
 delete_exist = True
