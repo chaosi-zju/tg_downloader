@@ -1,2 +1,3 @@
+loguru
 telethon~=1.24.0
 python-socks[asyncio]
