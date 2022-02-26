@@ -61,8 +61,7 @@ async def download_worker(down_queue, up_queue):
                     log.info('already exist file {}', message.file_name)
                     await up_queue.put(message)
                     continue
-            os.mknod(message.file_path)
-            # await client.download_media(message, message.file_path)
+            await client.download_media(message, message.file_path)
             await up_queue.put(message)
             log.info('successfully download {}', message.file_name)
         except Exception as e:
@@ -78,18 +77,14 @@ async def upload_worker(up_queue):
         try:
             if message is None:
                 break
-            # await asyncio.sleep(1)
-            subprocess.call([
-                'rsync',
-                '-avzP',
-                '--rsh=ssh',
-                message.file_path,
-                '%s@%s:%s' % ('root', 'chaosi-zju.com', '/root/test_rsync'),
-            ])
+            remote = 'root@chaosi-zju.com:/root/test_rsync'
+            command = ['rsync', '-avzP', '--rsh=ssh', message.file_path, remote]
+            if subprocess.call(command) != 0:
+                raise Exception('failed to call command: {}'.format(command))
             config[message.chat.id][message.file_type] = message.id
-            log.info('successfully rsync {}', message.file_name)
+            log.info('successfully rsync {}', message.file_path)
         except Exception as e:
-            log.error('failed to rsync {}: {}', message.file_name, e)
+            log.error('failed to rsync {}: {}', message.file_path, e)
         finally:
             up_queue.task_done()
 
@@ -104,7 +99,7 @@ def get_offset_from_config(chat, _type):
 
 
 async def main():
-    name, chat = await get_chat_id_by_name(client, '全球新鲜事')
+    name, chat = await get_chat_id_by_name(client, '全球')
 
     _types = [InputMessagesFilterPhotos, InputMessagesFilterMusic, InputMessagesFilterVoice,
               InputMessagesFilterVideo, InputMessagesFilterDocument]
@@ -140,8 +135,10 @@ if __name__ == '__main__':
     client.start()
     loop = asyncio.get_event_loop()
     try:
-        with open(config_file) as f:
+        with open(config_file, 'a+') as f:
+            f.seek(0)
             config = yaml.load(f, Loader=yaml.RoundTripLoader)
+            config = {} if config is None else config
         log.info('----start to download!----')
         loop.run_until_complete(main())
     finally:
