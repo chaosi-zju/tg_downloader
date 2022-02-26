@@ -1,0 +1,10 @@
+[Unit]
+Description=tg-downloader daemon
+
+[Service]
+ExecStart=/usr/bin/python3 /root/tg_downloader/main.py
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
