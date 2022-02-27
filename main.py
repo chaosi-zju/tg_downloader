@@ -98,6 +98,11 @@ def get_offset_from_config(chat, _type):
     return config[chat][typename]
 
 
+def save_config_to_file():
+    with open(config_file, 'w') as wf:
+        yaml.dump(config, wf, Dumper=yaml.RoundTripDumper)
+
+
 async def main():
     name, chat = await get_chat_id_by_name(client, '全球')
 
@@ -123,6 +128,7 @@ async def main():
         for task in tasks:
             await task
 
+        save_config_to_file()
         if prod.done() is False:
             prod.cancel()
             log.error('producer has not done, stop for possible problems!')
@@ -142,8 +148,7 @@ if __name__ == '__main__':
         log.info('----start to download!----')
         loop.run_until_complete(main())
     finally:
-        with open(config_file, 'w') as f:
-            yaml.dump(config, f, Dumper=yaml.RoundTripDumper)
+        save_config_to_file()
         client.disconnect()
         loop.close()
         log.info('----download finished, gracefully stopped!----')
