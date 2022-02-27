@@ -2,9 +2,11 @@
 Description=tg-downloader daemon
 
 [Service]
-ExecStart=/usr/bin/python3 /root/tg_downloader/main.py
-Restart=always
-RestartSec=5s
+Environment=tg_api_hash=abc
+WorkingDirectory=/root/tg_downloader
+ExecStart=/usr/bin/python3 ./main.py
+Restart=on-failure
+RestartSec=20s
 
 [Install]
 WantedBy=multi-user.target

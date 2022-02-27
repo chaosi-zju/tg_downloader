@@ -77,7 +77,7 @@ async def upload_worker(up_queue):
         try:
             if message is None:
                 break
-            remote = 'root@chaosi-zju.com:/root/test_rsync'
+            remote = 'root@chaosi-zju.com:/root/tg_downloader/downloads'
             command = ['rsync', '-avzP', '--rsh=ssh', message.file_path, remote]
             if subprocess.call(command) != 0:
                 raise Exception('failed to call command: {}'.format(command))
