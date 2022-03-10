@@ -3,6 +3,8 @@
 *.session-journal
 *.idea
 ./logs
+./config.yaml
+./downloader.db
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

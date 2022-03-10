@@ -1,8 +1,8 @@
 # !/usr/bin/env python3
 import os
+import sqlite3
 import asyncio
 import subprocess
-from ruamel import yaml
 from loguru import logger as log
 from telethon.sync import TelegramClient
 from telethon.tl.types import InputMessagesFilterPhotos
@@ -11,14 +11,30 @@ from telethon.tl.types import InputMessagesFilterDocument
 from telethon.tl.types import InputMessagesFilterMusic
 from telethon.tl.types import InputMessagesFilterVoice
 
+# tg_client
+chat_name = '全'
 session_name = 'hello'
 api_id = 14150995
 api_hash = os.environ.get('tg_api_hash')
-dir_prefix = './downloads/'
-config_file = './config.yaml'
 proxy = ("socks5", '127.0.0.1', 10808)
 client = TelegramClient(session_name, api_id, api_hash, proxy=None)
-max_worker_num = 8
+# sqlite3
+conn = sqlite3.connect('./downloader.db')
+cur = conn.cursor()
+# conf
+dir_prefix = './downloads/'
+max_worker_num = alive_worker_num = 8
+batch_upload_num = 3
+enable_upload = True
+zip_passwd = os.environ.get('zip_passwd')
+
+
+def init_sqlite_db():
+    try:
+        cur.execute('CREATE TABLE IF NOT EXISTS task(dirname TEXT, batchname TEXT, uploaded INT, files TEXT)')
+        conn.commit()
+    except Exception as e:
+        log.error('create sqlite table failed: {}', e)
 
 
 async def get_chat_id_by_name(_client, _name):
@@ -27,128 +43,157 @@ async def get_chat_id_by_name(_client, _name):
             return dialog.name, dialog.entity.id
 
 
-async def fetch_message(down_queue, v_chat, v_offset, v_filter):
+async def fetch_message(v_chat, v_offset, v_filter):
+    messages = []
     async for message in client.iter_messages(v_chat, reverse=True, offset_id=v_offset, limit=None, filter=v_filter):
-        filename = message.file.name
-        if filename is None:
-            filename = f'{message.id}{message.file.ext}'
-        message.file_type = v_filter.__name__[19:]
-        message.file_name = f'[({message.file_type})({message.id}){message.message}]{filename}'
-        await down_queue.put(message)
-        log.info('fetch message {}', message.file_name)
-    for i in range(max_worker_num):
-        await down_queue.put(None)
+        if message.media is not None:
+            filename = message.file.name
+            if filename is None:
+                filename = f'{message.id}{message.file.ext}'
+            message.file_type = v_filter.__name__[19:]
+            message.file_name = f'【{message.file_type}-{message.id}-{message.message}】{filename}'
+            messages.append(message)
+    return messages
 
 
-async def download_worker(down_queue, up_queue):
-    while True:
-        message = await down_queue.get()
+async def put_messages_to_queue(chat, _type, messages, down_queue):
+    batch, batch_size, batch_num = [], 0, 0
+    typename, min_id, max_id, size = '', 1000000, 1, 0
+    for msg in messages:
+        min_id = msg.id if msg.id < min_id else min_id
+        max_id = msg.id if msg.id > max_id else max_id
+        size += msg.file.size
+        if batch_size + msg.file.size < 1 * 1024 * 1024 * 1024:  # less than 1G for one batch
+            batch.append(msg)
+            batch_size += msg.file.size
+        else:
+            await down_queue.put((batch_num, batch))
+            batch_num += 1
+            batch_size = 0
+            batch = []
+    if len(batch) > 0:
+        await down_queue.put((batch_num, batch))
+        batch_num += 1
+    log.info('chat({}) has {} {}, min_id: {}, max_id: {}, size: {}MB, batch_num: {}', chat, len(messages),
+             _type.__name__[19:], min_id, max_id, int(size / 1024 / 1024), batch_num)
+
+
+async def download_worker(down_queue):
+    while down_queue.empty() is False:
+        batch_id, batch = await down_queue.get()
         try:
-            if message is None:
-                break
             st = os.statvfs('./')
-            if st.f_bavail * st.f_frsize / 1024 / 1024 / 1024 < 2:
-                log.error('the available disk capacity is lower than 2GB, stop to download!')
+            if st.f_bavail * st.f_frsize / 1024 / 1024 / 1024 < 5:
+                log.error('the available disk capacity is lower than 5GB, stop to download!')
                 break
-            dirname = dir_prefix + f'({message.chat.title}{message.chat.id})/' + message.date.strftime("%Y-%m")
-            message.file_path = os.path.join(dirname, message.file_name)
-            if not os.path.exists(dirname):
-                os.makedirs(dirname)
-            if os.path.exists(message.file_path):
-                if os.path.getsize(message.file_path) < message.file.size:
-                    os.remove(message.file_path)
-                else:
-                    log.info('already exist file {}', message.file_name)
-                    await up_queue.put(message)
-                    continue
-            await client.download_media(message, message.file_path)
-            await up_queue.put(message)
-            log.info('successfully download {}', message.file_name)
+
+            batchdir = os.path.join(dir_prefix, f'{batch[0].chat.title}{batch[0].chat.id}')
+            filedir = os.path.join(batchdir, f'batch-{batch_id}')
+            batchname = f'{batch[0].chat.title}{batch[0].chat.id}-{batch[0].file_type}-batch-{batch_id}.zip'
+
+            cur.execute(f"select uploaded from task where dirname = '{batchdir}' and batchname = '{batchname}'")
+            if cur.fetchone() is not None:
+                log.info('already downloaded batch {}', batchname)
+                continue
+
+            if not os.path.exists(os.path.join(batchdir, batchname)):
+                if not os.path.exists(filedir):
+                    os.makedirs(filedir)
+                for msg in batch:
+                    msg.file_path = os.path.join(filedir, msg.file_name)
+                    if os.path.exists(msg.file_path):
+                        if os.path.getsize(msg.file_path) < msg.file.size:
+                            os.remove(msg.file_path)
+                        else:
+                            log.info('already exist file {}', msg.file_name)
+                            continue
+                    # open(msg.file_path, 'w')
+                    # await asyncio.sleep(5)
+                    await client.download_media(msg, msg.file_path)
+                    log.info('successfully download {}', msg.file_name)
+
+                command = ['zip', '-mrP', zip_passwd, os.path.join(batchdir, batchname), filedir]
+                if subprocess.call(command) != 0:
+                    raise Exception('failed to call command: {}'.format(command))
+
+            files = '、'.join([msg.file_name for msg in batch])
+            cur.execute(f"insert into task values ('{batchdir}', '{batchname}', 0, '{files}')")
+            conn.commit()
+            log.info('successfully zipped batch {}', batchname)
         except Exception as e:
-            log.error('failed to download {}: {}', message.file_name, e)
+            log.error('failed to download {}: {}', batch[0].file_name, e)
         finally:
             down_queue.task_done()
-    await up_queue.put(None)
+    global alive_worker_num
+    alive_worker_num -= 1
 
 
-async def upload_worker(up_queue):
+async def upload_worker():
+    retry, fail, batchs = 0, 0, ''
     while True:
-        message = await up_queue.get()
         try:
-            if message is None:
-                break
-            remote = 'root@chaosi-zju.com:/root/tg_downloader/downloads'
-            command = ['rsync', '-avzP', '--rsh=ssh', message.file_path, remote]
+            cur.execute(f'select dirname, batchname from task where uploaded = 0 limit {batch_upload_num}')
+            data = cur.fetchall()
+            if len(data) == 0:
+                if alive_worker_num == 0:
+                    if retry >= 1:
+                        break
+                    retry += 1
+                await asyncio.sleep(60)
+                continue
+
+            # await asyncio.sleep(2)
+            paths = ' '.join(os.path.join(item[0], item[1]) for item in data)
+            command = ['aliyunpan', 'u', paths, 'tg_downloader']
             if subprocess.call(command) != 0:
                 raise Exception('failed to call command: {}'.format(command))
-            config[message.chat.id][message.file_type] = message.id
-            log.info('successfully rsync {}', message.file_path)
+
+            batchs = "', '".join(item[1] for item in data)
+            cur.execute(f"update task set uploaded = 1 where batchname in ('{batchs}')")
+            conn.commit()
+            retry, fail = 0, 0
+            log.info('successfully uploaded {}', f"'{batchs}'")
         except Exception as e:
-            log.error('failed to rsync {}: {}', message.file_path, e)
-        finally:
-            up_queue.task_done()
-
-
-def get_offset_from_config(chat, _type):
-    typename = _type.__name__[19:]
-    if chat not in config:
-        config[chat] = {}
-    if typename not in config[chat]:
-        config[chat][typename] = 1
-    return config[chat][typename]
-
-
-def save_config_to_file():
-    with open(config_file, 'w') as wf:
-        yaml.dump(config, wf, Dumper=yaml.RoundTripDumper)
+            log.error('failed to upload {}: {}', f"'{batchs}'", e)
+            if fail >= 2:
+                break
+            fail += 1
 
 
 async def main():
-    name, chat = await get_chat_id_by_name(client, '全球')
+    init_sqlite_db()
 
-    _types = [InputMessagesFilterPhotos, InputMessagesFilterMusic, InputMessagesFilterVoice,
-              InputMessagesFilterVideo, InputMessagesFilterDocument]
+    down_queue = asyncio.Queue()
+    name, chat = await get_chat_id_by_name(client, chat_name)
+    msg_types = [InputMessagesFilterPhotos, InputMessagesFilterMusic, InputMessagesFilterVoice,
+                 InputMessagesFilterVideo, InputMessagesFilterDocument]
 
-    for _type in _types:
-        offset = get_offset_from_config(chat, _type)
-        log.info('sub process for chat={} _type={} offset={} started!', chat, _type.__name__[19:], offset)
+    for _type in msg_types:
+        messages = await fetch_message(v_chat=chat, v_offset=1, v_filter=_type)
+        await put_messages_to_queue(chat, _type, messages, down_queue)
 
-        down_queue = asyncio.Queue(max_worker_num)
-        up_queue = asyncio.Queue(max_worker_num)
+    tasks = []
+    for i in range(max_worker_num):
+        tasks.append(asyncio.create_task(download_worker(down_queue)))
 
-        prod = asyncio.create_task(fetch_message(down_queue, chat, offset, _type))
+    if enable_upload:
+        tasks.append(asyncio.create_task(upload_worker()))
 
-        for i in range(max_worker_num):
-            asyncio.create_task(download_worker(down_queue, up_queue))
-
-        tasks = []
-        for i in range(max_worker_num):
-            tasks.append(asyncio.create_task(upload_worker(up_queue)))
-
-        for task in tasks:
-            await task
-
-        save_config_to_file()
-        if prod.done() is False:
-            prod.cancel()
-            log.error('producer has not done, stop for possible problems!')
-            break
+    for task in tasks:
+        await task
 
 
 if __name__ == '__main__':
-    log.add("./logs/{time:YYYY-MM-DD__HH}.log", rotation="1h")
-    log.add("./logs/{time:YYYY-MM-DD}.error.log", level="ERROR", rotation="1 days")
+    log.add("./logs/{time:YYYY-MM-DD__HH}.log", rotation="1h", retention="2 days")
+    log.add("./logs/{time:YYYY-MM-DD}.error.log", level="ERROR", rotation="1 days", retention="2 days")
     client.start()
     loop = asyncio.get_event_loop()
     try:
-        with open(config_file, 'a+') as f:
-            f.seek(0)
-            config = yaml.load(f, Loader=yaml.RoundTripLoader)
-            config = {} if config is None else config
-        log.info('----start to download!----')
+        log.info('----application started!----')
         loop.run_until_complete(main())
     finally:
-        save_config_to_file()
         client.disconnect()
+        cur.close()
+        conn.close()
         loop.close()
-        log.info('----download finished, gracefully stopped!----')
+        log.info('----application ended, gracefully exit!----')
