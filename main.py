@@ -23,6 +23,7 @@ conn = sqlite3.connect('./downloader.db')
 cur = conn.cursor()
 # conf
 dir_prefix = './downloads/'
+yunpan_path = '/root/Program/aliyunpan'
 max_worker_num = alive_worker_num = 8
 batch_upload_num = 3
 enable_upload = True
@@ -144,7 +145,7 @@ async def upload_worker():
 
             # await asyncio.sleep(2)
             paths = ' '.join(os.path.join(item[0], item[1]) for item in data)
-            command = ['aliyunpan', 'u', paths, 'tg_downloader']
+            command = [yunpan_path + 'aliyunpan', 'u', paths, 'tg_downloader']
             if subprocess.call(command) != 0:
                 raise Exception('failed to call command: {}'.format(command))
 
