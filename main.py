@@ -54,7 +54,7 @@ async def fetch_message(v_chat, v_offset, v_filter):
             if filename is None:
                 filename = f'{message.id}{message.file.ext}'
             message.file_type = v_filter.__name__[19:]
-            message_text = ''.join(re.findall(re.compile(u'[\u4e00-\u9fa5]'), message.message))[:20]
+            message_text = ''.join(re.findall(re.compile(u'[\u4e00-\u9fa5]'), message.message))[:15]
             message.file_name = f'【{message.file_type}-{message.id}-{message_text}】{filename}'
             messages.append(message)
     return messages
