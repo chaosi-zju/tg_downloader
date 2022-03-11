@@ -1,0 +1,10 @@
+[Unit]
+Description=onedrive daemon
+
+[Service]
+ExecStart=/usr/bin/onedrive --monitor --upload-only --remove-source-files --no-remote-delete --verbose
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target
