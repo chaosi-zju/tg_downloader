@@ -13,7 +13,7 @@ from telethon.tl.types import InputMessagesFilterMusic
 from telethon.tl.types import InputMessagesFilterVoice
 
 # tg_client
-chat_prefix = '全球'
+chat_name, chat_id = 'charles', 0
 session_name = 'hello'
 api_id = 14150995
 api_hash = os.environ.get('tg_api_hash')
@@ -54,8 +54,8 @@ async def fetch_message(v_chat, v_offset, v_filter):
             if filename is None:
                 filename = f'{message.id}{message.file.ext}'
             message.file_type = v_filter.__name__[19:]
-            message_text = ''.join(re.findall(re.compile(u'[\u4e00-\u9fa5]'), message.message))[:15]
-            message.file_name = f'【{message.file_type}-{message.id}-{message_text}】{filename}'
+            # message_text = ''.join(re.findall(re.compile(u'[\u4e00-\u9fa5]'), message.message))[:15]
+            message.file_name = f'【{message.file_type}-{message.id}】{filename}'
             messages.append(message)
     return messages
 
@@ -92,9 +92,9 @@ async def download_worker(down_queue):
                 log.error('the available disk capacity is lower than 5GB, stop to download!')
                 break
 
-            chatname = f'{batch[0].chat.title}{batch[0].chat.id}'
+            chatname = f'{chat_name}{chat_id}'
             batchdir = os.path.join(dir_prefix, chatname, f'batch-{batch_id}')
-            batchname = f'{batch[0].chat.title}{batch[0].chat.id}-{batch[0].file_type}-batch-{batch_id}.zip'
+            batchname = f'{chat_name}{chat_id}-{batch[0].file_type}-batch-{batch_id}.zip'
 
             cur.execute(f"select * from task where chatname = '{chatname}' and batchname = '{batchname}'")
             if cur.fetchone() is not None:
@@ -173,13 +173,14 @@ async def main():
     init_sqlite_db()
 
     down_queue = asyncio.Queue()
-    name, chat = await get_chat_id_by_name(client, chat_prefix)
+    global chat_name, chat_id
+    chat_name, chat_id = await get_chat_id_by_name(client, chat_name)
     msg_types = [InputMessagesFilterPhotos, InputMessagesFilterMusic, InputMessagesFilterVoice,
                  InputMessagesFilterVideo, InputMessagesFilterDocument]
 
     for _type in msg_types:
-        messages = await fetch_message(v_chat=chat, v_offset=1, v_filter=_type)
-        await put_messages_to_queue(chat, _type, messages, down_queue)
+        messages = await fetch_message(v_chat=chat_id, v_offset=1, v_filter=_type)
+        await put_messages_to_queue(chat_id, _type, messages, down_queue)
 
     tasks = []
     for i in range(max_worker_num):
