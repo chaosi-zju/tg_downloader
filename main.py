@@ -1,5 +1,6 @@
 # !/usr/bin/env python3
 import os
+import re
 import sqlite3
 import asyncio
 import subprocess
@@ -12,7 +13,7 @@ from telethon.tl.types import InputMessagesFilterMusic
 from telethon.tl.types import InputMessagesFilterVoice
 
 # tg_client
-chat_name = '全'
+chat_prefix = '全球'
 session_name = 'hello'
 api_id = 14150995
 api_hash = os.environ.get('tg_api_hash')
@@ -23,16 +24,17 @@ conn = sqlite3.connect('./downloader.db')
 cur = conn.cursor()
 # conf
 dir_prefix = './downloads/'
-yunpan_path = '/root/Program/aliyunpan'
+yunpan_path = '/root/Program/aliyunpan/'
+onedrive_path = '/root/OneDrive/tg_download/'
 max_worker_num = alive_worker_num = 8
 batch_upload_num = 3
-enable_upload = True
+enable_upload = False
 zip_passwd = os.environ.get('zip_passwd')
 
 
 def init_sqlite_db():
     try:
-        cur.execute('CREATE TABLE IF NOT EXISTS task(dirname TEXT, batchname TEXT, uploaded INT, files TEXT)')
+        cur.execute('CREATE TABLE IF NOT EXISTS task(chatname TEXT, batchname TEXT, uploaded INT, files TEXT)')
         conn.commit()
     except Exception as e:
         log.error('create sqlite table failed: {}', e)
@@ -52,26 +54,28 @@ async def fetch_message(v_chat, v_offset, v_filter):
             if filename is None:
                 filename = f'{message.id}{message.file.ext}'
             message.file_type = v_filter.__name__[19:]
-            message.file_name = f'【{message.file_type}-{message.id}-{message.message}】{filename}'
+            message_text = ''.join(re.findall(re.compile(u'[\u4e00-\u9fa5]'), message.message))[:20]
+            message.file_name = f'【{message.file_type}-{message.id}-{message_text}】{filename}'
             messages.append(message)
     return messages
 
 
 async def put_messages_to_queue(chat, _type, messages, down_queue):
     batch, batch_size, batch_num = [], 0, 0
-    typename, min_id, max_id, size = '', 1000000, 1, 0
+    typename, min_id, max_id, size = '', 1, 1, 0
     for msg in messages:
-        min_id = msg.id if msg.id < min_id else min_id
+        min_id = msg.id if msg.id < min_id or min_id == 1 else min_id
         max_id = msg.id if msg.id > max_id else max_id
         size += msg.file.size
         if batch_size + msg.file.size < 1 * 1024 * 1024 * 1024:  # less than 1G for one batch
             batch.append(msg)
             batch_size += msg.file.size
         else:
-            await down_queue.put((batch_num, batch))
-            batch_num += 1
-            batch_size = 0
-            batch = []
+            if len(batch) > 0:
+                await down_queue.put((batch_num, batch))
+                batch_num += 1
+            batch_size = msg.file.size
+            batch = [msg]
     if len(batch) > 0:
         await down_queue.put((batch_num, batch))
         batch_num += 1
@@ -88,20 +92,20 @@ async def download_worker(down_queue):
                 log.error('the available disk capacity is lower than 5GB, stop to download!')
                 break
 
-            batchdir = os.path.join(dir_prefix, f'{batch[0].chat.title}{batch[0].chat.id}')
-            filedir = os.path.join(batchdir, f'batch-{batch_id}')
+            chatname = f'{batch[0].chat.title}{batch[0].chat.id}'
+            batchdir = os.path.join(dir_prefix, chatname, f'batch-{batch_id}')
             batchname = f'{batch[0].chat.title}{batch[0].chat.id}-{batch[0].file_type}-batch-{batch_id}.zip'
 
-            cur.execute(f"select uploaded from task where dirname = '{batchdir}' and batchname = '{batchname}'")
+            cur.execute(f"select * from task where chatname = '{chatname}' and batchname = '{batchname}'")
             if cur.fetchone() is not None:
                 log.info('already downloaded batch {}', batchname)
                 continue
 
-            if not os.path.exists(os.path.join(batchdir, batchname)):
-                if not os.path.exists(filedir):
-                    os.makedirs(filedir)
+            if not os.path.exists(onedrive_path + batchname):
+                if not os.path.exists(batchdir):
+                    os.makedirs(batchdir)
                 for msg in batch:
-                    msg.file_path = os.path.join(filedir, msg.file_name)
+                    msg.file_path = os.path.join(batchdir, msg.file_name)
                     if os.path.exists(msg.file_path):
                         if os.path.getsize(msg.file_path) < msg.file.size:
                             os.remove(msg.file_path)
@@ -109,16 +113,16 @@ async def download_worker(down_queue):
                             log.info('already exist file {}', msg.file_name)
                             continue
                     # open(msg.file_path, 'w')
-                    # await asyncio.sleep(5)
+                    # await asyncio.sleep(1)
                     await client.download_media(msg, msg.file_path)
                     log.info('successfully download {}', msg.file_name)
 
-                command = ['zip', '-mrP', zip_passwd, os.path.join(batchdir, batchname), filedir]
+                command = ['zip', '-mrP', zip_passwd, onedrive_path + batchname, batchdir]
                 if subprocess.call(command) != 0:
                     raise Exception('failed to call command: {}'.format(command))
 
             files = '、'.join([msg.file_name for msg in batch])
-            cur.execute(f"insert into task values ('{batchdir}', '{batchname}', 0, '{files}')")
+            cur.execute(f"insert into task values ('{chatname}', '{batchname}', 0, '{files}')")
             conn.commit()
             log.info('successfully zipped batch {}', batchname)
         except Exception as e:
@@ -129,11 +133,12 @@ async def download_worker(down_queue):
     alive_worker_num -= 1
 
 
+# Deprecated
 async def upload_worker():
     retry, fail, batchs = 0, 0, ''
     while True:
         try:
-            cur.execute(f'select dirname, batchname from task where uploaded = 0 limit {batch_upload_num}')
+            cur.execute(f'select batchname from task where uploaded = 0 limit {batch_upload_num}')
             data = cur.fetchall()
             if len(data) == 0:
                 if alive_worker_num == 0:
@@ -144,12 +149,15 @@ async def upload_worker():
                 continue
 
             # await asyncio.sleep(2)
-            paths = ' '.join(os.path.join(item[0], item[1]) for item in data)
-            command = [yunpan_path + 'aliyunpan', 'u', paths, 'tg_downloader']
+            paths = [onedrive_path + item[0] for item in data]
+            command = [yunpan_path + 'aliyunpan', 'u'] + paths + ['tg_downloader']
+            if subprocess.call(command) != 0:
+                raise Exception('failed to call command: {}'.format(command))
+            command = ['rm'] + paths
             if subprocess.call(command) != 0:
                 raise Exception('failed to call command: {}'.format(command))
 
-            batchs = "', '".join(item[1] for item in data)
+            batchs = "', '".join(item[0] for item in data)
             cur.execute(f"update task set uploaded = 1 where batchname in ('{batchs}')")
             conn.commit()
             retry, fail = 0, 0
@@ -165,7 +173,7 @@ async def main():
     init_sqlite_db()
 
     down_queue = asyncio.Queue()
-    name, chat = await get_chat_id_by_name(client, chat_name)
+    name, chat = await get_chat_id_by_name(client, chat_prefix)
     msg_types = [InputMessagesFilterPhotos, InputMessagesFilterMusic, InputMessagesFilterVoice,
                  InputMessagesFilterVideo, InputMessagesFilterDocument]
 
