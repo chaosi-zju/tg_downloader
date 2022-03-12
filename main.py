@@ -52,6 +52,7 @@ async def fetch_message(v_chat, v_offset, v_limit, v_filter):
             filename = message.file.name
             if filename is None:
                 filename = f'{message.id}{message.file.ext}'
+            message.filter = v_filter
             message.file_type = v_filter.__name__[19:]
             message.file_name = f'【{message.file_type}-{message.id}】{filename}'
             messages.append(message)
@@ -116,7 +117,7 @@ async def download_worker(down_queue):
 
                     # open(file_path, 'w')
                     # await asyncio.sleep(1)
-                    msgs = await fetch_message(v_chat=chat_id, v_offset=msg.id, v_limit=1, v_filter=None)
+                    msgs = await fetch_message(v_chat=chat_id, v_offset=msg.id-1, v_limit=1, v_filter=msg.filter)
                     msg = msg if len(msgs) == 0 else msgs[0]
                     await client.download_media(msg, file_path)
                     log.info('successfully download {}', msg.file_name)
