@@ -11,4 +11,5 @@ cp -rf ./tg_downloader.service /etc/systemd/system/
 systemctl enable tg_downloader.service
 systemctl start tg_downloader.service
 systemctl status tg_downloader.service
+journalctl --since "2022-03-11 23:00:00" -u tg_downloader.service -f
 ```

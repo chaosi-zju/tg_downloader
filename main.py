@@ -1,6 +1,5 @@
 # !/usr/bin/env python3
 import os
-import re
 import sqlite3
 import asyncio
 import subprocess
@@ -25,8 +24,8 @@ cur = conn.cursor()
 # conf
 dir_prefix = './downloads/'
 yunpan_path = '/root/Program/aliyunpan/'
-onedrive_path = '/root/OneDrive/tg_download/'
-max_worker_num = alive_worker_num = 8
+onedrive_path = '/root/OneDrive/tg-download/'
+max_worker_num = alive_worker_num = 5
 batch_upload_num = 3
 enable_upload = False
 zip_passwd = os.environ.get('zip_passwd')
@@ -46,15 +45,14 @@ async def get_chat_id_by_name(_client, _name):
             return dialog.name, dialog.entity.id
 
 
-async def fetch_message(v_chat, v_offset, v_filter):
+async def fetch_message(v_chat, v_offset, v_limit, v_filter):
     messages = []
-    async for message in client.iter_messages(v_chat, reverse=True, offset_id=v_offset, limit=None, filter=v_filter):
+    async for message in client.iter_messages(v_chat, reverse=True, offset_id=v_offset, limit=v_limit, filter=v_filter):
         if message.media is not None:
             filename = message.file.name
             if filename is None:
                 filename = f'{message.id}{message.file.ext}'
             message.file_type = v_filter.__name__[19:]
-            # message_text = ''.join(re.findall(re.compile(u'[\u4e00-\u9fa5]'), message.message))[:15]
             message.file_name = f'【{message.file_type}-{message.id}】{filename}'
             messages.append(message)
     return messages
@@ -88,9 +86,12 @@ async def download_worker(down_queue):
         batch_id, batch = await down_queue.get()
         try:
             st = os.statvfs('./')
-            if st.f_bavail * st.f_frsize / 1024 / 1024 / 1024 < 5:
-                log.error('the available disk capacity is lower than 5GB, stop to download!')
-                break
+            if st.f_bavail * st.f_frsize / 1024 / 1024 / 1024 < 2:
+                log.error('the available disk capacity is lower than 2GB, wait for more free disk!')
+                while st.f_bavail * st.f_frsize / 1024 / 1024 / 1024 < 5:
+                    await asyncio.sleep(600)
+                    st = os.statvfs('./')
+                log.info('the available disk capacity is more than 5GB, continue to download!')
 
             chatname = f'{chat_name}{chat_id}'
             batchdir = os.path.join(dir_prefix, chatname, f'batch-{batch_id}')
@@ -105,16 +106,19 @@ async def download_worker(down_queue):
                 if not os.path.exists(batchdir):
                     os.makedirs(batchdir)
                 for msg in batch:
-                    msg.file_path = os.path.join(batchdir, msg.file_name)
-                    if os.path.exists(msg.file_path):
-                        if os.path.getsize(msg.file_path) < msg.file.size:
-                            os.remove(msg.file_path)
+                    file_path = os.path.join(batchdir, msg.file_name)
+                    if os.path.exists(file_path):
+                        if os.path.getsize(file_path) < msg.file.size:
+                            os.remove(file_path)
                         else:
                             log.info('already exist file {}', msg.file_name)
                             continue
-                    # open(msg.file_path, 'w')
+
+                    # open(file_path, 'w')
                     # await asyncio.sleep(1)
-                    await client.download_media(msg, msg.file_path)
+                    msgs = await fetch_message(v_chat=chat_id, v_offset=msg.id, v_limit=1, v_filter=None)
+                    msg = msg if len(msgs) == 0 else msgs[0]
+                    await client.download_media(msg, file_path)
                     log.info('successfully download {}', msg.file_name)
 
                 command = ['zip', '-mrP', zip_passwd, onedrive_path + batchname, batchdir]
@@ -179,7 +183,7 @@ async def main():
                  InputMessagesFilterVideo, InputMessagesFilterDocument]
 
     for _type in msg_types:
-        messages = await fetch_message(v_chat=chat_id, v_offset=1, v_filter=_type)
+        messages = await fetch_message(v_chat=chat_id, v_offset=1, v_limit=None, v_filter=_type)
         await put_messages_to_queue(chat_id, _type, messages, down_queue)
 
     tasks = []
